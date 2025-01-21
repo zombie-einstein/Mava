@@ -30,6 +30,7 @@ from mava.wrappers.jumanji import (
     ConnectorWrapper,
     LbfWrapper,
     RwareWrapper,
+    SearchAndRescueWrapper,
     VectorConnectorWrapper,
 )
 from mava.wrappers.matrax import MatraxWrapper

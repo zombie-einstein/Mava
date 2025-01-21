@@ -1,0 +1,15 @@
+# todo: rename this file!
+name: SearchAndRescue-v0
+task_name: default
+
+task_config:
+  num_searchers: 4
+  num_targets: 40
+
+env_kwargs:
+  target_contact_range: 0.02
+  searcher_max_rotate: 0.25
+  searcher_max_accelerate: 0.005
+  searcher_min_speed: 0.005
+  searcher_max_speed: 0.02
+  time_limit: 400

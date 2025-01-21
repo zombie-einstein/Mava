@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+import math
 from abc import ABC, abstractmethod
 from functools import cached_property
 from typing import Tuple, Union
@@ -34,6 +35,8 @@ from jumanji.environments.routing.connector.constants import (
 )
 from jumanji.environments.routing.lbf import LevelBasedForaging
 from jumanji.environments.routing.robot_warehouse import RobotWarehouse
+from jumanji.environments.swarms.search_and_rescue import SearchAndRescue
+from jumanji.environments.swarms.search_and_rescue.types import Observation as SARObservation
 from jumanji.types import TimeStep
 from jumanji.wrappers import Wrapper
 
@@ -84,10 +87,10 @@ class JumanjiMarlWrapper(Wrapper, ABC):
 
     def step(self, state: State, action: chex.Array) -> Tuple[State, TimeStep]:
         """Step the environment."""
-        state, timestep = self._env.step(state, action)
-        timestep = self.modify_timestep(timestep)
+        state, raw_timestep = self._env.step(state, action)
+        timestep = self.modify_timestep(raw_timestep)
         if self.add_global_state:
-            global_state = self.get_global_state(timestep.observation)
+            global_state = self.get_global_state(raw_timestep.observation)
             observation = ObservationGlobalState(
                 global_state=global_state,
                 agents_view=timestep.observation.agents_view,
@@ -580,6 +583,89 @@ class CleanerWrapper(JumanjiMarlWrapper):
                 name="agents_view",
                 minimum=0,
                 maximum=self.num_agents,
+            )
+            obs_data["global_state"] = global_state
+            return specs.Spec(ObservationGlobalState, "ObservationSpec", **obs_data)
+
+        return specs.Spec(Observation, "ObservationSpec", **obs_data)
+
+
+class SearchAndRescueWrapper(JumanjiMarlWrapper):
+    def __init__(self, env: Environment, add_global_state: bool):
+        super().__init__(env, add_global_state)
+        self._env: SearchAndRescue
+
+    @cached_property
+    def action_dim(self) -> chex.Array:
+        """Get the actions dim for each agent."""
+        return 2
+
+    def modify_timestep(self, timestep: TimeStep) -> TimeStep[Observation]:
+        agent_view = timestep.observation.searcher_views.reshape(self.num_agents, -1)
+        observation = Observation(
+            agents_view=agent_view.astype(float),
+            action_mask=jnp.ones((self.num_agents, self.action_dim)),
+            step_count=jnp.full((self.num_agents,), 0),  # unused for now
+        )
+        return timestep.replace(observation=observation)
+
+    def get_global_state(self, obs: SARObservation) -> chex.Array:
+        """Constructs the global state from the global information
+        in the agent observations (dirty tiles, wall tiles and agent positions).
+        """
+        idxs = jnp.arange(self.num_agents)
+
+        # TODO: Does this need to include heading of other agents?
+        #   or could also use actual target positions?
+        def wrap_obs(i: chex.Numeric) -> chex.Array:
+            _idxs = (idxs + i) % self.num_agents
+            pos = obs.positions[_idxs].reshape(-1)
+            targets_a = obs.searcher_views[_idxs, 1].reshape(-1)
+            targets_b = obs.searcher_views[_idxs, 2].reshape(-1)
+            return jnp.hstack([pos, targets_a, targets_b])
+
+        obs = jax.vmap(wrap_obs)(idxs)
+
+        return obs
+
+    @cached_property
+    def observation_spec(self) -> specs.Spec[Union[Observation, ObservationGlobalState]]:
+        """Specification of the observation of the environment."""
+
+        step_count = specs.BoundedArray(
+            (self.num_agents,),
+            int,
+            jnp.zeros(self.num_agents, dtype=int),
+            jnp.repeat(self.time_limit, self.num_agents),
+            "step_count",
+        )
+        action_mask = specs.BoundedArray(
+            (self.num_agents, self.action_dim), bool, False, True, "action_mask"
+        )
+
+        sar_obs_spec = self._env.observation_spec.searcher_views
+        single_agent_obs_size = math.prod(sar_obs_spec.shape[1:])
+        agents_view = specs.BoundedArray(
+            shape=(self.num_agents, single_agent_obs_size),
+            dtype=float,
+            name="agents_view",
+            minimum=-1,
+            maximum=1,
+        )
+
+        obs_data = {
+            "agents_view": agents_view,
+            "action_mask": action_mask,
+            "step_count": step_count,
+        }
+
+        if self.add_global_state:
+            global_state = specs.BoundedArray(
+                shape=(self.num_agents, self.num_agents * (3 + sar_obs_spec.shape[2])),
+                dtype=float,
+                name="global_state",
+                minimum=0.0,
+                maximum=1.0,
             )
             obs_data["global_state"] = global_state
             return specs.Spec(ObservationGlobalState, "ObservationSpec", **obs_data)
