@@ -37,6 +37,7 @@ from jumanji.environments.routing.lbf import LevelBasedForaging
 from jumanji.environments.routing.robot_warehouse import RobotWarehouse
 from jumanji.environments.swarms.search_and_rescue import SearchAndRescue
 from jumanji.environments.swarms.search_and_rescue.types import Observation as SARObservation
+from jumanji.environments.swarms.search_and_rescue.types import State as SARState
 from jumanji.types import TimeStep
 from jumanji.wrappers import Wrapper
 
@@ -61,7 +62,7 @@ class JumanjiMarlWrapper(Wrapper, ABC):
         """Modify the timestep for `step` and `reset`."""
         pass
 
-    def get_global_state(self, obs: Observation) -> chex.Array:
+    def get_global_state(self, state: State, obs: Observation) -> chex.Array:
         """The default way to create a global state for an environment if it has no
         available global state - concatenate all observations.
         """
@@ -71,10 +72,10 @@ class JumanjiMarlWrapper(Wrapper, ABC):
 
     def reset(self, key: chex.PRNGKey) -> Tuple[State, TimeStep]:
         """Reset the environment."""
-        state, timestep = self._env.reset(key)
-        timestep = self.modify_timestep(timestep)
+        state, raw_timestep = self._env.reset(key)
+        timestep = self.modify_timestep(raw_timestep)
         if self.add_global_state:
-            global_state = self.get_global_state(timestep.observation)
+            global_state = self.get_global_state(state, raw_timestep.observation)
             observation = ObservationGlobalState(
                 global_state=global_state,
                 agents_view=timestep.observation.agents_view,
@@ -90,7 +91,7 @@ class JumanjiMarlWrapper(Wrapper, ABC):
         state, raw_timestep = self._env.step(state, action)
         timestep = self.modify_timestep(raw_timestep)
         if self.add_global_state:
-            global_state = self.get_global_state(raw_timestep.observation)
+            global_state = self.get_global_state(state, raw_timestep.observation)
             observation = ObservationGlobalState(
                 global_state=global_state,
                 agents_view=timestep.observation.agents_view,
@@ -293,7 +294,7 @@ class ConnectorWrapper(JumanjiMarlWrapper):
             reward = aggregate_rewards(reward, self.num_agents)
         return timestep.replace(observation=Observation(**obs_data), reward=reward, extras=extras)
 
-    def get_global_state(self, obs: Observation) -> chex.Array:
+    def get_global_state(self, state: State, obs: Observation) -> chex.Array:
         """Constructs the global state from the global information
         in the agent observations (positions, targets and paths.)
         """
@@ -548,7 +549,7 @@ class CleanerWrapper(JumanjiMarlWrapper):
             observation=Observation(**obs_data), reward=reward, discount=discount, extras=extras
         )
 
-    def get_global_state(self, obs: Observation) -> chex.Array:
+    def get_global_state(self, state: State, obs: Observation) -> chex.Array:
         """Constructs the global state from the global information
         in the agent observations (dirty tiles, wall tiles and agent positions).
         """
@@ -609,7 +610,7 @@ class SearchAndRescueWrapper(JumanjiMarlWrapper):
         )
         return timestep.replace(observation=observation)
 
-    def get_global_state(self, obs: SARObservation) -> chex.Array:
+    def get_global_state(self, state: SARState, obs: SARObservation) -> chex.Array:
         """Constructs the global state from the global information
         in the agent observations (dirty tiles, wall tiles and agent positions).
         """
@@ -620,9 +621,10 @@ class SearchAndRescueWrapper(JumanjiMarlWrapper):
         def wrap_obs(i: chex.Numeric) -> chex.Array:
             _idxs = (idxs + i) % self.num_agents
             pos = obs.positions[_idxs].reshape(-1)
+            headings = state.searchers.heading[_idxs].reshape(-1)
             targets_a = obs.searcher_views[_idxs, 1].reshape(-1)
             targets_b = obs.searcher_views[_idxs, 2].reshape(-1)
-            return jnp.hstack([pos, targets_a, targets_b])
+            return jnp.hstack([pos, headings, targets_a, targets_b])
 
         obs = jax.vmap(wrap_obs)(idxs)
 
@@ -649,8 +651,8 @@ class SearchAndRescueWrapper(JumanjiMarlWrapper):
             shape=(self.num_agents, single_agent_obs_size),
             dtype=float,
             name="agents_view",
-            minimum=-1,
-            maximum=1,
+            minimum=-1.0,
+            maximum=1.0,
         )
 
         obs_data = {
@@ -661,10 +663,10 @@ class SearchAndRescueWrapper(JumanjiMarlWrapper):
 
         if self.add_global_state:
             global_state = specs.BoundedArray(
-                shape=(self.num_agents, self.num_agents * (3 + sar_obs_spec.shape[2])),
+                shape=(self.num_agents, self.num_agents * (3 + 2 * sar_obs_spec.shape[2])),
                 dtype=float,
                 name="global_state",
-                minimum=0.0,
+                minimum=-1.0,
                 maximum=1.0,
             )
             obs_data["global_state"] = global_state
