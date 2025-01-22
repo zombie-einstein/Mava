@@ -55,6 +55,7 @@ from mava.utils.logger import LogEvent, MavaLogger
 from mava.utils.multistep import calculate_gae
 from mava.utils.network_utils import get_action_head
 from mava.utils.training import make_learning_rate
+from mava.visualisation_utils import rollout_mava_system
 from mava.wrappers.episode_metrics import get_final_step_metrics
 
 
@@ -672,6 +673,11 @@ def run_experiment(_config: DictConfig) -> float:
 
         t = int(steps_per_rollout * (eval_step + 1))
         logger.log(eval_metrics, t, eval_step, LogEvent.ABSOLUTE)
+
+    states = rollout_mava_system(
+        eval_env, tree.map(lambda x: x[0], best_params), {"hidden_state": eval_hs}, key, eval_act_fn
+    )
+    env.unwrapped.animate(states, interval=100, save_path="rec_mappo_animation.gif")
 
     # Stop the logger.
     logger.stop()
